@@ -79,43 +79,33 @@ where
     }
 }
 
-struct Literal(&'static str);
-
-impl<'input> Parser<'input, &'input str> for Literal {
+impl<'input> Parser<'input, &'input str> for &'static str {
     fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
-        if let Some(rest) = input.strip_prefix(self.0) {
-            let found = &input[..self.0.len()];
+        if let Some(rest) = input.strip_prefix(self) {
+            let found = &input[..self.len()];
             Ok((found, rest))
         } else {
             Err(anyhow::format_err!(
                 "expected literal `{}` not found in input",
-                self.0
+                self
             ))
         }
     }
 }
 
 pub fn literal(expected: &'static str) -> impl for<'a> Parser<'a, &'a str> {
-    Literal(expected)
+    expected
 }
 
-struct Numeric;
-
-impl<'input> Parser<'input, &'input str> for Numeric {
-    fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
-        match input.chars().next() {
-            Some(c) if c.is_numeric() => {
-                let found = &input[..c.len_utf8()];
-                let rest = &input[c.len_utf8()..];
-                Ok((found, rest))
-            }
-            _ => Err(anyhow::format_err!("non-numeric character found")),
+pub fn numeric<'input>() -> impl Parser<'input, &'input str> {
+    |input: &'input str| match input.chars().next() {
+        Some(c) if c.is_numeric() => {
+            let found = &input[..c.len_utf8()];
+            let rest = &input[c.len_utf8()..];
+            Ok((found, rest))
         }
+        _ => Err(anyhow::format_err!("non-numeric character found")),
     }
-}
-
-pub fn numeric() -> impl for<'a> Parser<'a, &'a str> {
-    Numeric
 }
 
 struct ZeroOrMore<P>(P);
@@ -285,7 +275,7 @@ where
     }
 }
 pub fn end() -> impl for<'a> Parser<'a, &'a str> {
-    End { inner: literal("") }
+    End { inner: "" }
 }
 
 #[macro_export]
@@ -338,7 +328,7 @@ mod test {
     #[test]
     fn test_then_method() {
         let input = String::from("500ms");
-        let (output, rest) = uint().then(literal("ms")).parse(&input).unwrap();
+        let (output, rest) = uint().then("ms").parse(&input).unwrap();
 
         assert_eq!(output.0, 500);
         assert_eq!(output.1, "ms");
@@ -350,7 +340,7 @@ mod test {
         let input = "500ms";
 
         let (output, _rest) = uint()
-            .then(literal("ms"))
+            .then("ms")
             .map(|(int, unit)| match unit {
                 "ms" => Duration::from_millis(int),
                 _ => unimplemented!("nah man"),
