@@ -4,7 +4,7 @@ mod ticker;
 use anyhow::Context;
 use clap::Parser;
 use parsers::{uint, Parser as _Parser};
-use std::{fmt::Display, time::Duration};
+use std::time::Duration;
 use tokio::time::interval;
 
 #[derive(Parser)]
@@ -21,7 +21,7 @@ struct Args {
     every: Duration,
 }
 
-fn parse_duration(s: &str) -> Result<Duration, anyhow::Error> {
+fn duration<'input>() -> impl parsers::Parser<'input, Duration> {
     uint()
         .then(one_of!("s", "ms", "ns", "us"))
         .map(|(int, unit)| match unit {
@@ -31,10 +31,14 @@ fn parse_duration(s: &str) -> Result<Duration, anyhow::Error> {
             "us" => Duration::from_micros(int),
             _ => unreachable!(),
         })
+}
+
+fn parse_duration(s: &str) -> Result<Duration, anyhow::Error> {
+    duration()
         .end()
         .parse(s)
         .map(|(out, _)| out)
-        .context("not parseable to duration")
+        .context("cannot parse to duration value")
 }
 
 #[tokio::main]
