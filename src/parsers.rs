@@ -151,6 +151,33 @@ where
     ZeroOrMore(parser)
 }
 
+struct ZeroOrMoreSlice<P, O> {
+    inner: P,
+    _phantom: std::marker::PhantomData<O>,
+}
+
+impl<'input, P, O> Parser<'input, &'input str> for ZeroOrMoreSlice<P, O>
+where
+    P: Parser<'input, O>,
+{
+    fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
+        let mut pos = 0;
+
+        loop {
+            let idk = &input[pos..];
+            match self.inner.parse(idk) {
+                Ok((_, rest)) => {
+                    let consumed = idk.len() - rest.len();
+                    pos += consumed;
+                }
+                Err(_) => break,
+            }
+        }
+
+        Ok((&input[..pos], &input[pos..]))
+    }
+}
+
 struct OneOrMore<P>(P);
 
 impl<'input, P, O> Parser<'input, Vec<O>> for OneOrMore<P>
@@ -190,65 +217,54 @@ where
     OneOrMore(parser)
 }
 
-struct NOrMore<P> {
-    parser: P,
-    times: usize,
+struct OneOrMoreSlice<P, O> {
+    inner: P,
+    _phantom: std::marker::PhantomData<O>,
 }
 
-impl<'input, P, O> Parser<'input, Vec<O>> for NOrMore<P>
+impl<'input, P, O> Parser<'input, &'input str> for OneOrMoreSlice<P, O>
 where
     P: Parser<'input, O>,
 {
-    fn parse(&self, input: &'input str) -> ParseResult<'input, Vec<O>> {
+    fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
         let mut pos = 0;
-        let mut outputs = Vec::with_capacity(self.times);
 
-        for _ in 0..self.times {
+        loop {
             let idk = &input[pos..];
-            match self.parser.parse(idk) {
-                Ok((found, rest)) => {
+            match self.inner.parse(idk) {
+                Ok((_, rest)) => {
                     let consumed = idk.len() - rest.len();
                     pos += consumed;
-                    outputs.push(found);
                 }
                 Err(_) => break,
             }
         }
 
-        if outputs.is_empty() {
+        if pos == 0 {
             Err(anyhow::format_err!(
                 "parser did not find any values it could consume"
             ))
         } else {
-            Ok((outputs, &input[pos..]))
+            Ok((&input[..pos], &input[pos..]))
         }
     }
 }
 
-pub fn n_or_more<'input, P, O>(times: usize, parser: P) -> impl Parser<'input, Vec<O>>
+fn one_or_more_slice<'input, P, O>(parser: P) -> impl Parser<'input, &'input str>
 where
     P: Parser<'input, O>,
 {
-    NOrMore { parser, times }
-}
-
-struct IntegerParser;
-
-impl<'input> Parser<'input, u64> for IntegerParser {
-    fn parse(&self, input: &'input str) -> ParseResult<'input, u64> {
-        one_or_more(numeric()).parse(input).map(|(out, rest)| {
-            let matched = &input[..out.len()];
-            let int = matched
-                .parse()
-                .expect("output from numeric should parse to int without issue");
-
-            (int, rest)
-        })
+    OneOrMoreSlice {
+        inner: parser,
+        _phantom: Default::default(),
     }
 }
 
-pub fn uint() -> impl for<'a> Parser<'a, u64> {
-    IntegerParser
+pub fn uint<'input>() -> impl Parser<'input, u64> {
+    one_or_more_slice(numeric()).map(|out| {
+        out.parse()
+            .expect("output from numeric should parse to int without issue")
+    })
 }
 
 struct End<P> {
