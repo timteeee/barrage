@@ -2,12 +2,13 @@ mod parsers;
 mod ticker;
 
 use anyhow::Context;
-use clap::Parser;
-use parsers::{uint, Parser as _Parser};
+use clap::Parser as _Parser;
+use parsers::{uint, Parser};
+
 use std::time::Duration;
 use tokio::time::interval;
 
-#[derive(Parser)]
+#[derive(clap::Parser)]
 struct Args {
     /// URL of the service to barrage
     //addr: String,
@@ -21,23 +22,22 @@ struct Args {
     every: Duration,
 }
 
-fn duration<'input>() -> impl parsers::Parser<'input, Duration> {
+fn duration<'input>() -> impl Parser<'input, Duration> {
     uint()
-        .then(one_of!("s", "ms", "ns", "us"))
-        .map(|(int, unit)| match unit {
-            "s" => Duration::from_secs(int),
-            "ms" => Duration::from_millis(int),
-            "ns" => Duration::from_nanos(int),
-            "us" => Duration::from_micros(int),
-            _ => unreachable!(),
-        })
+        .then(map_one_of!(
+            "s" => Duration::from_secs,
+            "ms" => Duration::from_millis,
+            "ns" => Duration::from_nanos,
+            "us" => Duration::from_micros,
+        ))
+        .map(|(amt, duration)| duration(amt))
 }
 
 fn parse_duration(s: &str) -> Result<Duration, anyhow::Error> {
     duration()
         .end()
         .parse(s)
-        .map(|(out, _)| out)
+        .map(|(_, out)| out)
         .context("cannot parse to duration value")
 }
 

@@ -1,6 +1,6 @@
 use anyhow::Context;
 
-type ParseResult<'input, O> = anyhow::Result<(O, &'input str)>;
+pub type ParseResult<'input, O> = anyhow::Result<(&'input str, O)>;
 
 pub trait Parser<'input, O>: Sized {
     fn parse(&self, input: &'input str) -> ParseResult<'input, O>;
@@ -9,22 +9,25 @@ pub trait Parser<'input, O>: Sized {
     where
         P: Parser<'input, O2>,
     {
-        Then { first: self, then }
+        move |input| {
+            let (rest, first) = self.parse(input).context("first parser unsuccessful")?;
+            let (rest, then) = then.parse(rest).context("second parser unsuccessful")?;
+            Ok((rest, (first, then)))
+        }
     }
 
-    fn map<F, O2>(self, f: F) -> impl Parser<'input, O2>
+    fn map<F, O2>(self, transform: F) -> impl Parser<'input, O2>
     where
         F: Fn(O) -> O2,
     {
-        Map {
-            inner: self,
-            f,
-            _phantom: Default::default(),
+        move |input| {
+            self.parse(input)
+                .map(|(rest, output)| (rest, transform(output)))
         }
     }
 
     fn end(self) -> impl Parser<'input, O> {
-        End { inner: self }
+        self.then(end()).map(|(out, _)| out)
     }
 }
 
@@ -37,53 +40,11 @@ where
     }
 }
 
-struct Then<P1, P2> {
-    first: P1,
-    then: P2,
-}
-
-impl<'input, P1, P2, O1, O2> Parser<'input, (O1, O2)> for Then<P1, P2>
-where
-    P1: Parser<'input, O1>,
-    P2: Parser<'input, O2>,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, (O1, O2)> {
-        let (first_output, rest) = self
-            .first
-            .parse(input)
-            .context("first parser unsuccessful")?;
-        let (second_output, rest) = self
-            .then
-            .parse(rest)
-            .context("second parser unsuccessful")?;
-        let output = (first_output, second_output);
-        Ok((output, rest))
-    }
-}
-
-struct Map<P, F, O> {
-    inner: P,
-    f: F,
-    _phantom: std::marker::PhantomData<O>,
-}
-
-impl<'input, P, F, O, N> Parser<'input, N> for Map<P, F, O>
-where
-    P: Parser<'input, O>,
-    F: Fn(O) -> N,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, N> {
-        self.inner
-            .parse(input)
-            .map(|(output, rest)| ((self.f)(output), rest))
-    }
-}
-
 impl<'input> Parser<'input, &'input str> for &'static str {
     fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
         if let Some(rest) = input.strip_prefix(self) {
             let found = &input[..self.len()];
-            Ok((found, rest))
+            Ok((rest, found))
         } else {
             Err(anyhow::format_err!(
                 "expected literal `{}` not found in input",
@@ -97,185 +58,59 @@ pub fn literal(expected: &'static str) -> impl for<'a> Parser<'a, &'a str> {
     expected
 }
 
-pub fn numeric<'input>() -> impl Parser<'input, &'input str> {
-    |input: &'input str| match input.chars().next() {
-        Some(c) if c.is_numeric() => {
+pub fn match_char_where<'input, F>(pred: F) -> impl Parser<'input, &'input str>
+where
+    F: Fn(char) -> bool,
+{
+    move |input: &'input str| match input.chars().next() {
+        Some(c) if pred(c) => {
             let found = &input[..c.len_utf8()];
             let rest = &input[c.len_utf8()..];
-            Ok((found, rest))
+            Ok((rest, found))
         }
-        _ => Err(anyhow::format_err!("non-numeric character found")),
+        Some(c) => Err(anyhow::format_err!("`{}` does not satisfy predicate", c)),
+        None => Err(anyhow::format_err!("unexpected end of input")),
     }
 }
+pub fn numeric<'input>() -> impl Parser<'input, &'input str> {
+    match_char_where(|c| c.is_numeric())
+}
 
-struct ZeroOrMore<P>(P);
-
-impl<'input, P, O> Parser<'input, Vec<O>> for ZeroOrMore<P>
+fn one_or_more<'input, P, O>(parser: P) -> impl Parser<'input, &'input str>
 where
     P: Parser<'input, O>,
 {
-    fn parse(&self, input: &'input str) -> ParseResult<'input, Vec<O>> {
-        let mut pos = 0;
-        let mut outputs = Vec::new();
+    move |input| {
+        let mut consumed = 0;
+        let mut remaining = input;
 
-        loop {
-            let idk = &input[pos..];
-            match self.0.parse(idk) {
-                Ok((found, rest)) => {
-                    let consumed = idk.len() - rest.len();
-                    pos += consumed;
-                    outputs.push(found);
-                }
-                Err(_) => break,
-            }
+        while let Ok((rest, _)) = parser.parse(remaining) {
+            consumed += remaining.len() - rest.len();
+            remaining = rest;
         }
 
-        Ok((outputs, &input[pos..]))
-    }
-}
-
-pub fn zero_or_more<'input, P, O>(parser: P) -> impl Parser<'input, Vec<O>>
-where
-    P: Parser<'input, O>,
-{
-    ZeroOrMore(parser)
-}
-
-struct ZeroOrMoreSlice<P, O> {
-    inner: P,
-    _phantom: std::marker::PhantomData<O>,
-}
-
-impl<'input, P, O> Parser<'input, &'input str> for ZeroOrMoreSlice<P, O>
-where
-    P: Parser<'input, O>,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
-        let mut pos = 0;
-
-        loop {
-            let idk = &input[pos..];
-            match self.inner.parse(idk) {
-                Ok((_, rest)) => {
-                    let consumed = idk.len() - rest.len();
-                    pos += consumed;
-                }
-                Err(_) => break,
-            }
-        }
-
-        Ok((&input[..pos], &input[pos..]))
-    }
-}
-
-struct OneOrMore<P>(P);
-
-impl<'input, P, O> Parser<'input, Vec<O>> for OneOrMore<P>
-where
-    P: Parser<'input, O>,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, Vec<O>> {
-        let mut pos = 0;
-        let mut outputs = Vec::new();
-
-        loop {
-            let idk = &input[pos..];
-            match self.0.parse(idk) {
-                Ok((found, rest)) => {
-                    let consumed = idk.len() - rest.len();
-                    pos += consumed;
-                    outputs.push(found);
-                }
-                Err(_) => break,
-            }
-        }
-
-        if outputs.is_empty() {
+        if consumed == 0 {
             Err(anyhow::format_err!(
                 "parser did not find any values it could consume"
             ))
         } else {
-            Ok((outputs, &input[pos..]))
+            Ok((remaining, &input[..consumed]))
         }
-    }
-}
-
-pub fn one_or_more<'input, P, O>(parser: P) -> impl Parser<'input, Vec<O>>
-where
-    P: Parser<'input, O>,
-{
-    OneOrMore(parser)
-}
-
-struct OneOrMoreSlice<P, O> {
-    inner: P,
-    _phantom: std::marker::PhantomData<O>,
-}
-
-impl<'input, P, O> Parser<'input, &'input str> for OneOrMoreSlice<P, O>
-where
-    P: Parser<'input, O>,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, &'input str> {
-        let mut pos = 0;
-
-        loop {
-            let idk = &input[pos..];
-            match self.inner.parse(idk) {
-                Ok((_, rest)) => {
-                    let consumed = idk.len() - rest.len();
-                    pos += consumed;
-                }
-                Err(_) => break,
-            }
-        }
-
-        if pos == 0 {
-            Err(anyhow::format_err!(
-                "parser did not find any values it could consume"
-            ))
-        } else {
-            Ok((&input[..pos], &input[pos..]))
-        }
-    }
-}
-
-fn one_or_more_slice<'input, P, O>(parser: P) -> impl Parser<'input, &'input str>
-where
-    P: Parser<'input, O>,
-{
-    OneOrMoreSlice {
-        inner: parser,
-        _phantom: Default::default(),
     }
 }
 
 pub fn uint<'input>() -> impl Parser<'input, u64> {
-    one_or_more_slice(numeric()).map(|out| {
+    one_or_more(numeric()).map(|out| {
         out.parse()
             .expect("output from numeric should parse to int without issue")
     })
 }
 
-struct End<P> {
-    inner: P,
-}
-
-impl<'input, P, O> Parser<'input, O> for End<P>
-where
-    P: Parser<'input, O>,
-{
-    fn parse(&self, input: &'input str) -> ParseResult<'input, O> {
-        self.inner
-            .parse(input)
-            .and_then(|(output, rest)| match rest {
-                "" => Ok((output, input)),
-                _ => Err(anyhow::format_err!("not end of input")),
-            })
+pub fn end<'input>() -> impl Parser<'input, ()> {
+    |input| match input {
+        "" => Ok((input, ())),
+        _ => Err(anyhow::format_err!("not end of input")),
     }
-}
-pub fn end() -> impl for<'a> Parser<'a, &'a str> {
-    End { inner: "" }
 }
 
 #[macro_export]
@@ -293,6 +128,18 @@ macro_rules! one_of {
     }
 }
 
+#[macro_export]
+macro_rules! map_one_of {
+    ($($lit:literal => $to:expr$(,)?)*) => {
+        $crate::one_of!($($lit),*).map(|out| match out {
+            $(
+                $lit => $to,
+            )*
+            _ => unreachable!(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod test {
     use std::time::Duration;
@@ -302,18 +149,18 @@ mod test {
 
     #[test]
     fn test_literal() {
-        let input = String::from("hello world");
-        let (output, rest) = literal("hello").parse(&input).unwrap();
+        let input = "hello world";
+        let (rest, output) = literal("hello").parse(input).unwrap();
 
         assert_eq!(output, "hello");
         assert_eq!(rest, " world");
-        assert!(literal("goodbye").parse(&input).is_err());
+        assert!(literal("goodbye").parse(input).is_err());
     }
 
     #[test]
     fn test_numeric() {
-        let input = String::from("123");
-        let (output, rest) = numeric().parse(&input).unwrap();
+        let input = "123";
+        let (rest, output) = numeric().parse(input).unwrap();
 
         assert_eq!(output, "1");
         assert_eq!(rest, "23");
@@ -321,14 +168,17 @@ mod test {
 
     #[test]
     fn test_end_method() {
-        assert!(end().parse("").is_ok());
-        assert!(end().parse("abc").is_err());
+        let input = "abc";
+
+        let (rest, output) = literal("abc").end().parse(input).unwrap();
+        assert_eq!(output, "abc");
+        assert_eq!(rest, "");
     }
 
     #[test]
     fn test_then_method() {
-        let input = String::from("500ms");
-        let (output, rest) = uint().then("ms").parse(&input).unwrap();
+        let input = "500ms";
+        let (rest, output) = uint().then("ms").parse(input).unwrap();
 
         assert_eq!(output.0, 500);
         assert_eq!(output.1, "ms");
@@ -339,7 +189,7 @@ mod test {
     fn test_map_method() {
         let input = "500ms";
 
-        let (output, _rest) = uint()
+        let (_rest, output) = uint()
             .then("ms")
             .map(|(int, unit)| match unit {
                 "ms" => Duration::from_millis(int),
@@ -363,7 +213,7 @@ mod test {
         ];
 
         for (input, expected) in inputs.into_iter().zip(expected_outputs) {
-            let (output, _rest) = uint()
+            let (_rest, output) = uint()
                 .then(one_of!("s", "ms", "ns", "us"))
                 .map(|(int, unit)| match unit {
                     "s" => Duration::from_secs(int),
@@ -372,6 +222,33 @@ mod test {
                     "us" => Duration::from_micros(int),
                     _ => unimplemented!("nah man"),
                 })
+                .end()
+                .parse(input)
+                .expect("skill issue");
+
+            assert_eq!(output, expected);
+        }
+    }
+
+    #[test]
+    fn test_map_one_of_macro() {
+        let inputs = vec!["500ms", "2s", "1000ns", "1000000us"];
+        let expected_outputs = vec![
+            Duration::from_millis(500),
+            Duration::from_secs(2),
+            Duration::from_nanos(1000),
+            Duration::from_micros(1_000_000),
+        ];
+
+        for (input, expected) in inputs.into_iter().zip(expected_outputs) {
+            let (_rest, output) = uint()
+                .then(map_one_of!(
+                    "s" => Duration::from_secs,
+                    "ms" => Duration::from_millis,
+                    "ns" => Duration::from_nanos,
+                    "us" => Duration::from_micros,
+                ))
+                .map(|(amt, duration_fn)| duration_fn(amt))
                 .end()
                 .parse(input)
                 .expect("skill issue");
