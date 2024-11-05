@@ -115,29 +115,25 @@ pub fn end<'input>() -> impl Parser<'input, ()> {
 
 #[macro_export]
 macro_rules! one_of {
-    ($($lit:literal),*) => {
+    ($($parser:expr),*) => {
         |input| {
         $(
-            match $crate::parsers::literal($lit).parse(input) {
+            match <_ as $crate::parsers::Parser<'_, _>>::parse(&$parser, input) {
                 Ok(inner) => return Ok(inner),
                 Err(_) => {},
             };
         )*
-            Err(anyhow::format_err!("none of provided options matched"))
+            Err(anyhow::format_err!("none of the provided parsers succeeded"))
         }
-    }
-}
-
-#[macro_export]
-macro_rules! map_one_of {
-    ($($lit:literal => $to:expr$(,)?)*) => {
-        $crate::one_of!($($lit),*).map(|out| match out {
+    };
+    ($($parser:expr => $to:expr$(,)?)*) => {
+        $crate::one_of!($($parser),*).map(|out| match out {
             $(
-                $lit => $to,
+                $parser => $to,
             )*
             _ => unreachable!(),
         })
-    }
+    };
 }
 
 #[cfg(test)]
@@ -231,7 +227,7 @@ mod test {
     }
 
     #[test]
-    fn test_map_one_of_macro() {
+    fn test_one_of_macro_map_branch() {
         let inputs = vec!["500ms", "2s", "1000ns", "1000000us"];
         let expected_outputs = vec![
             Duration::from_millis(500),
@@ -241,14 +237,14 @@ mod test {
         ];
 
         for (input, expected) in inputs.into_iter().zip(expected_outputs) {
-            let (_rest, output) = uint()
-                .then(map_one_of!(
+            let (_, output) = uint()
+                .then(one_of!(
                     "s" => Duration::from_secs,
                     "ms" => Duration::from_millis,
                     "ns" => Duration::from_nanos,
                     "us" => Duration::from_micros,
                 ))
-                .map(|(amt, duration_fn)| duration_fn(amt))
+                .map(|(amount, duration_from)| duration_from(amount))
                 .end()
                 .parse(input)
                 .expect("skill issue");

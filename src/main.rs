@@ -24,13 +24,13 @@ struct Args {
 
 fn duration<'input>() -> impl Parser<'input, Duration> {
     uint()
-        .then(map_one_of!(
+        .then(one_of! {
             "s" => Duration::from_secs,
             "ms" => Duration::from_millis,
             "ns" => Duration::from_nanos,
             "us" => Duration::from_micros,
-        ))
-        .map(|(amt, duration)| duration(amt))
+        })
+        .map(|(amount, duration_from)| duration_from(amount))
 }
 
 fn parse_duration(s: &str) -> Result<Duration, anyhow::Error> {
